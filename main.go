@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"runtime/pprof"
 	"sort"
 	"strconv"
 	"strings"
@@ -12,6 +13,16 @@ import (
 )
 
 func main() {
+	f, err := os.Create(".profile/cpu-profile.prof")
+	if err != nil {
+		panic(err)
+	}
+	defer f.Close()
+	if err := pprof.StartCPUProfile(f); err != nil {
+		panic(err)
+	}
+	defer pprof.StopCPUProfile()
+
 	start := time.Now()
 	doStuff()
 	fmt.Printf("Time it took since start: %v seconds\n", time.Now().Sub(start))
@@ -33,12 +44,26 @@ func doStuff() {
 	}
 	defer f.Close()
 
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := strings.Split(scanner.Text(), ";")
-		city, tempStr := line[0], line[1]
+	buffer := func() <-chan []string {
+		stream := make(chan []string, 100)
+		go func() {
+			defer close(stream)
 
-		temp64, err := strconv.ParseFloat(tempStr, 32)
+			scanner := bufio.NewScanner(f)
+			for scanner.Scan() {
+				line := strings.Split(scanner.Text(), ";")
+				stream <- line
+			}
+		}()
+		return stream
+	}
+
+	stream := buffer()
+
+	for data := range stream {
+		city, tempStr := data[0], data[1]
+
+		temp64, err := strconv.ParseFloat(tempStr, 64)
 		if err != nil {
 			log.Fatalf("failed to convert %s into float", tempStr)
 		}
