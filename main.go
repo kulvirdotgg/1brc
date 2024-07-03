@@ -44,15 +44,26 @@ func doStuff() {
 	}
 	defer f.Close()
 
-	buffer := func() <-chan []string {
-		stream := make(chan []string, 100)
+	buffer := func() <-chan [][]string {
+		stream := make(chan [][]string, 100)
+		sendBuffer := make([][]string, 1024)
 		go func() {
 			defer close(stream)
 
 			scanner := bufio.NewScanner(f)
+			bIdx := 0
 			for scanner.Scan() {
-				line := strings.Split(scanner.Text(), ";")
-				stream <- line
+				if bIdx == 1024 {
+					hereCopy := make([][]string, 1024)
+					copy(hereCopy, sendBuffer)
+					stream <- hereCopy
+					bIdx = 0
+				}
+				sendBuffer[bIdx] = strings.Split(scanner.Text(), ";")
+				bIdx++
+			}
+			if bIdx != 0 {
+				stream <- sendBuffer[:bIdx]
 			}
 		}()
 		return stream
@@ -60,26 +71,28 @@ func doStuff() {
 
 	stream := buffer()
 
-	for data := range stream {
-		city, tempStr := data[0], data[1]
+	for chunk := range stream {
+		for _, line := range chunk {
+			city, tempStr := line[0], line[1]
 
-		temp64, err := strconv.ParseFloat(tempStr, 64)
-		if err != nil {
-			log.Fatalf("failed to convert %s into float", tempStr)
-		}
-		temp := float32(temp64)
-
-		station, ok := mp[city]
-		if !ok {
-			mp[city] = &stationData{temp, temp, temp, 1}
-		} else {
-			if temp < station.min {
-				station.min = temp
-			} else if temp > station.max {
-				station.max = temp
+			temp64, err := strconv.ParseFloat(tempStr, 64)
+			if err != nil {
+				log.Fatalf("failed to convert %s into float", tempStr)
 			}
-			station.sum += temp
-			station.cnt++
+			temp := float32(temp64)
+
+			station, ok := mp[city]
+			if !ok {
+				mp[city] = &stationData{temp, temp, temp, 1}
+			} else {
+				if temp < station.min {
+					station.min = temp
+				} else if temp > station.max {
+					station.max = temp
+				}
+				station.sum += temp
+				station.cnt++
+			}
 		}
 	}
 	printStuff(mp)
