@@ -1,8 +1,9 @@
 package main
 
 import (
-	"bufio"
+	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"runtime/pprof"
@@ -44,26 +45,33 @@ func doStuff() {
 	}
 	defer f.Close()
 
-	buffer := func() <-chan [][]string {
-		stream := make(chan [][]string, 100)
-		sendBuffer := make([][]string, 1024)
+	buffer := func() <-chan []string {
+		stream := make(chan []string, 100)
+		sendBuffer := make([]string, 100)
+
+		// 100 chunk size to read
+		chunkSize := 100 * 1024 * 1024
+		buf := make([]byte, chunkSize)
+		var builder strings.Builder
+		builder.Grow(1024)
+
+		var cnt int
 		go func() {
 			defer close(stream)
 
-			scanner := bufio.NewScanner(f)
-			bIdx := 0
-			for scanner.Scan() {
-				if bIdx == 1024 {
-					hereCopy := make([][]string, 1024)
-					copy(hereCopy, sendBuffer)
-					stream <- hereCopy
-					bIdx = 0
+			for {
+				read, err := f.Read(buf)
+				if err != nil {
+					if errors.Is(err, io.EOF) {
+						cnt = readChunk(buf, read, cnt, &builder, sendBuffer, stream)
+						break
+					}
+					log.Fatalf("error occuered while reading the chunk from file.\n %v\n", err)
 				}
-				sendBuffer[bIdx] = strings.Split(scanner.Text(), ";")
-				bIdx++
+				cnt = readChunk(buf, read, cnt, &builder, sendBuffer, stream)
 			}
-			if bIdx != 0 {
-				stream <- sendBuffer[:bIdx]
+			if cnt != 0 {
+				stream <- sendBuffer[:cnt]
 			}
 		}()
 		return stream
@@ -73,8 +81,13 @@ func doStuff() {
 
 	for chunk := range stream {
 		for _, line := range chunk {
-			city, tempStr := line[0], line[1]
+			idx := strings.Index(line, ";")
+			// idk why this should ever happen, but still got it checked
+			if idx == -1 {
+				continue
+			}
 
+			city, tempStr := line[:idx], line[idx+1:]
 			temp64, err := strconv.ParseFloat(tempStr, 64)
 			if err != nil {
 				log.Fatalf("failed to convert %s into float", tempStr)
@@ -96,6 +109,28 @@ func doStuff() {
 		}
 	}
 	printStuff(mp)
+}
+
+func readChunk(buf []byte, read, cnt int, builder *strings.Builder, sendBuffer []string, stream chan<- []string) int {
+	for _, ch := range buf[:read] {
+		if ch == '\n' {
+			if builder.Len() != 0 {
+				sendBuffer[cnt] = builder.String()
+				builder.Reset()
+				cnt++
+
+				if cnt == 100 {
+					cnt = 0
+					hereCopy := make([]string, 100)
+					copy(hereCopy, sendBuffer)
+					stream <- hereCopy
+				}
+			}
+		} else {
+			builder.WriteByte(ch)
+		}
+	}
+	return cnt
 }
 
 func printStuff(mp map[string]*stationData) {
