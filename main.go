@@ -37,8 +37,6 @@ type stationData struct {
 }
 
 func doStuff() {
-	mp := make(map[string]*stationData)
-
 	f, err := os.Open("measurements.txt")
 	if err != nil {
 		log.Fatalf("Error while opening the file, %v", err)
@@ -46,32 +44,32 @@ func doStuff() {
 	defer f.Close()
 
 	buffer := func() <-chan []string {
-		stream := make(chan []string, 100)
-		sendBuffer := make([]string, 100)
+		stream := make(chan []string, 128)
+		bufferSlice := make([]string, 128)
 
-		// 100 chunk size to read
-		chunkSize := 100 * 1024 * 1024
-		buf := make([]byte, chunkSize)
+		// 4MB chunk size to read
+		chunkSize := 4 * 1024 * 1024
+		readChunk := make([]byte, chunkSize)
 		var builder strings.Builder
-		builder.Grow(1024)
+		builder.Grow(128)
 
 		var cnt int
 		go func() {
 			defer close(stream)
 
 			for {
-				read, err := f.Read(buf)
+				read, err := f.Read(readChunk)
 				if err != nil {
 					if errors.Is(err, io.EOF) {
-						cnt = readChunk(buf, read, cnt, &builder, sendBuffer, stream)
+						cnt = processChunk(readChunk, read, cnt, &builder, bufferSlice, stream)
 						break
 					}
 					log.Fatalf("error occuered while reading the chunk from file.\n %v\n", err)
 				}
-				cnt = readChunk(buf, read, cnt, &builder, sendBuffer, stream)
+				cnt = processChunk(readChunk, read, cnt, &builder, bufferSlice, stream)
 			}
 			if cnt != 0 {
-				stream <- sendBuffer[:cnt]
+				stream <- bufferSlice[:cnt]
 			}
 		}()
 		return stream
@@ -79,6 +77,7 @@ func doStuff() {
 
 	stream := buffer()
 
+	mp := make(map[string]*stationData)
 	for chunk := range stream {
 		for _, line := range chunk {
 			idx := strings.Index(line, ";")
@@ -111,18 +110,18 @@ func doStuff() {
 	printStuff(mp)
 }
 
-func readChunk(buf []byte, read, cnt int, builder *strings.Builder, sendBuffer []string, stream chan<- []string) int {
-	for _, ch := range buf[:read] {
+func processChunk(readBuffer []byte, read, cnt int, builder *strings.Builder, bufferSlice []string, stream chan<- []string) int {
+	for _, ch := range readBuffer[:read] {
 		if ch == '\n' {
 			if builder.Len() != 0 {
-				sendBuffer[cnt] = builder.String()
+				bufferSlice[cnt] = builder.String()
 				builder.Reset()
 				cnt++
 
-				if cnt == 100 {
+				if cnt == 128 {
 					cnt = 0
-					hereCopy := make([]string, 100)
-					copy(hereCopy, sendBuffer)
+					hereCopy := make([]string, 128)
+					copy(hereCopy, bufferSlice)
 					stream <- hereCopy
 				}
 			}
