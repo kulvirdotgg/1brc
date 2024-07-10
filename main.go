@@ -49,7 +49,7 @@ func doStuff() {
 	cpus := runtime.NumCPU()
 	bytesStream := make(chan []byte, cpus)
 
-	stream := make(chan []string)
+	stream := make(chan []string, 128)
 
 	var wg sync.WaitGroup
 
