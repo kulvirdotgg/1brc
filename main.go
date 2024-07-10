@@ -1,15 +1,18 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"os"
+	"runtime"
 	"runtime/pprof"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -43,43 +46,62 @@ func doStuff() {
 	}
 	defer f.Close()
 
-	buffer := func() <-chan []string {
-		stream := make(chan []string, 128)
-		bufferSlice := make([]string, 128)
+	cpus := runtime.NumCPU()
+	bytesStream := make(chan []byte, cpus)
 
-		// 4MB chunk size to read
+	stream := make(chan []string)
+
+	var wg sync.WaitGroup
+
+	// reading file into chunks
+	go func() {
 		chunkSize := 4 * 1024 * 1024
 		readChunk := make([]byte, chunkSize)
-		var builder strings.Builder
-		builder.Grow(128)
+		// content of leftover last line which doesn't end in '\n' delimiter
+		// this belongs to newline, but because of buffer size we were unable to accomondate whole line.
+		leftChunk := make([]byte, 0, chunkSize)
 
-		var cnt int
-		go func() {
-			defer close(stream)
-
-			for {
-				read, err := f.Read(readChunk)
-				if err != nil {
-					if errors.Is(err, io.EOF) {
-						cnt = processChunk(readChunk, read, cnt, &builder, bufferSlice, stream)
-						break
-					}
-					log.Fatalf("error occuered while reading the chunk from file.\n %v\n", err)
+		for {
+			read, err := f.Read(readChunk)
+			if err != nil {
+				if errors.Is(err, io.EOF) {
+					break
 				}
-				cnt = processChunk(readChunk, read, cnt, &builder, bufferSlice, stream)
+				log.Fatalf("Error in reading from file\n error is: %v", err)
 			}
-			if cnt != 0 {
-				stream <- bufferSlice[:cnt]
+			readChunk = readChunk[:read]
+			sendUpto := bytes.LastIndex(readChunk, []byte{'\n'})
+
+			// sending slice to channel and writing again on same slice can cause deadlocks
+			// hence always make a copy of the slice for sending purpose
+			sendCopy := append(leftChunk, readChunk[:sendUpto]...)
+			leftChunk = make([]byte, len(readChunk[sendUpto+1:]))
+			leftChunk = append(leftChunk, readChunk[sendUpto+1:]...)
+
+			bytesStream <- sendCopy
+		}
+		close(bytesStream)
+	}()
+
+	for cpu := 0; cpu < cpus; cpu++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			for byteChunk := range bytesStream {
+				processChunk(byteChunk, stream)
 			}
 		}()
-		return stream
 	}
 
-	stream := buffer()
+	go func() {
+		wg.Wait()
+		close(stream)
+	}()
 
 	mp := make(map[string]*stationData)
-	for chunk := range stream {
-		for _, line := range chunk {
+	for strs := range stream {
+		for _, line := range strs {
 			idx := strings.Index(line, ";")
 			// idk why this should ever happen, but still got it checked
 			if idx == -1 {
@@ -110,18 +132,22 @@ func doStuff() {
 	printStuff(mp)
 }
 
-func processChunk(readBuffer []byte, read, cnt int, builder *strings.Builder, bufferSlice []string, stream chan<- []string) int {
-	for _, ch := range readBuffer[:read] {
+func processChunk(buffer []byte, stream chan<- []string) {
+	var count int
+	var builder strings.Builder
+	stringChunk := make([]string, 128)
+
+	for _, ch := range buffer {
 		if ch == '\n' {
 			if builder.Len() != 0 {
-				bufferSlice[cnt] = builder.String()
+				stringChunk[count] = builder.String()
 				builder.Reset()
-				cnt++
+				count++
 
-				if cnt == 128 {
-					cnt = 0
+				if count == 128 {
+					count = 0
 					hereCopy := make([]string, 128)
-					copy(hereCopy, bufferSlice)
+					copy(hereCopy, stringChunk)
 					stream <- hereCopy
 				}
 			}
@@ -129,7 +155,9 @@ func processChunk(readBuffer []byte, read, cnt int, builder *strings.Builder, bu
 			builder.WriteByte(ch)
 		}
 	}
-	return cnt
+	if count != 0 {
+		stream <- stringChunk
+	}
 }
 
 func printStuff(mp map[string]*stationData) {
