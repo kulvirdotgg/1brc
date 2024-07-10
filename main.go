@@ -49,7 +49,7 @@ func doStuff() {
 	cpus := runtime.NumCPU()
 	bytesStream := make(chan []byte, cpus)
 
-	stream := make(chan []string, 128)
+	stream := make(chan map[string]stationData, 8)
 
 	var wg sync.WaitGroup
 
@@ -100,64 +100,64 @@ func doStuff() {
 	}()
 
 	mp := make(map[string]*stationData)
-	for strs := range stream {
-		for _, line := range strs {
-			idx := strings.Index(line, ";")
-			// idk why this should ever happen, but still got it checked
-			if idx == -1 {
-				continue
-			}
+	for smallMap := range stream {
+		for city, info := range smallMap {
+			if station, ok := mp[city]; ok {
+				station.sum += info.sum
+				station.cnt += info.cnt
 
-			city, tempStr := line[:idx], line[idx+1:]
-			temp64, err := strconv.ParseFloat(tempStr, 64)
-			if err != nil {
-				log.Fatalf("failed to convert %s into float", tempStr)
-			}
-			temp := float32(temp64)
-
-			station, ok := mp[city]
-			if !ok {
-				mp[city] = &stationData{temp, temp, temp, 1}
-			} else {
-				if temp < station.min {
-					station.min = temp
-				} else if temp > station.max {
-					station.max = temp
+				if info.max > station.max {
+					station.max = info.max
 				}
-				station.sum += temp
-				station.cnt++
+				if info.min < station.min {
+					station.min = info.min
+				}
+			} else {
+				mp[city] = &info
 			}
 		}
 	}
 	printStuff(mp)
 }
 
-func processChunk(buffer []byte, stream chan<- []string) {
-	var count int
+func processChunk(buffer []byte, stream chan<- map[string]stationData) {
 	var builder strings.Builder
-	stringChunk := make([]string, 128)
+	mp := make(map[string]stationData)
 
+	var city string
 	for _, ch := range buffer {
 		if ch == '\n' {
 			if builder.Len() != 0 {
-				stringChunk[count] = builder.String()
+				tempStr := builder.String()
 				builder.Reset()
-				count++
 
-				if count == 128 {
-					count = 0
-					hereCopy := make([]string, 128)
-					copy(hereCopy, stringChunk)
-					stream <- hereCopy
+				temp64, err := strconv.ParseFloat(tempStr, 64)
+				if err != nil {
+					log.Fatalf("failed to convert %s into float", tempStr)
+				}
+				temp := float32(temp64)
+
+				station, ok := mp[city]
+				if !ok {
+					mp[city] = stationData{temp, temp, temp, 1}
+				} else {
+					if temp < station.min {
+						station.min = temp
+					} else if temp > station.max {
+						station.max = temp
+					}
+					station.sum += temp
+					station.cnt++
 				}
 			}
+		} else if ch == ';' {
+			city = builder.String()
+			builder.Reset()
 		} else {
 			builder.WriteByte(ch)
 		}
 	}
-	if count != 0 {
-		stream <- stringChunk
-	}
+	stream <- mp
 }
 
 func printStuff(mp map[string]*stationData) {
