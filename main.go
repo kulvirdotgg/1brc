@@ -49,11 +49,10 @@ func doStuff() {
 	cpus := runtime.NumCPU()
 	bytesStream := make(chan []byte, cpus)
 
-	stream := make(chan map[string]stationData, 8)
+	stream := make(chan map[string]stationData, cpus)
 
 	var wg sync.WaitGroup
 
-	// reading file into chunks
 	go func() {
 		chunkSize := 4 * 1024 * 1024
 		readChunk := make([]byte, chunkSize)
@@ -99,7 +98,7 @@ func doStuff() {
 		close(stream)
 	}()
 
-	mp := make(map[string]*stationData)
+	mp := make(map[string]stationData)
 	for smallMap := range stream {
 		for city, info := range smallMap {
 			if station, ok := mp[city]; ok {
@@ -113,7 +112,7 @@ func doStuff() {
 					station.min = info.min
 				}
 			} else {
-				mp[city] = &info
+				mp[city] = info
 			}
 		}
 	}
@@ -160,8 +159,8 @@ func processChunk(buffer []byte, stream chan<- map[string]stationData) {
 	stream <- mp
 }
 
-func printStuff(mp map[string]*stationData) {
-	cities := make([]string, 0, len(mp))
+func printStuff(mp map[string]stationData) {
+	cities := make([]string, len(mp))
 
 	for key := range mp {
 		cities = append(cities, key)
